@@ -15,20 +15,13 @@ jobs:
         with:
           node-version: 18
 
-      - name: Install EAS CLI
-        run: npm install -g eas-cli
-
       - name: Install dependencies
         run: npm install
 
-      - name: Build APK
-        run: eas build --platform android --profile preview --non-interactive --local --output ./StreamRecorder.apk
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Build on Expo servers
+        run: eas build --platform android --profile preview --non-interactive --no-wait
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: StreamRecorder-APK
-          path: "*.apk"
-          retention-days: 30
