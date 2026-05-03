@@ -1,434 +1,539 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet, View, Text, TextInput, TouchableOpacity,
-  ScrollView, Alert, StatusBar, ActivityIndicator,
-  SafeAreaView, FlatList, Linking
+  ScrollView, Alert, StatusBar, SafeAreaView, FlatList,
+  Linking, AppState, Vibration,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import * as Notifications from 'expo-notifications';
 
-// ── Colors ────────────────────────────────────────────────────────────────────
+// ── Notification handler ──────────────────────────────────────────────────────
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
+
+// ── WhatsApp Dark Colors ──────────────────────────────────────────────────────
 const C = {
-  bg:       '#0D0E14',
-  card:     '#13141F',
-  card2:    '#0A0B10',
-  blue:     '#4761F5',
-  blueDim:  '#1C2347',
-  red:      '#C93030',
-  green:    '#2ECC71',
-  orange:   '#F5A623',
-  text:     '#E8EAFA',
-  textDim:  '#6B7299',
-  textMid:  '#9BA3CC',
-  border:   '#1E2030',
+  bg:        '#111B21',
+  surface:   '#1F2C34',
+  surface2:  '#2A3942',
+  green:     '#00A884',
+  greenDim:  '#00543F',
+  greenDark: '#005C4B',
+  text:      '#E9EDEF',
+  textMid:   '#8696A0',
+  textDim:   '#667781',
+  red:       '#FF5252',
+  redDark:   '#3D1515',
+  orange:    '#FFA726',
+  border:    '#2A3942',
 };
 
 const POLL_SECONDS = 60;
+const STORAGE_CHANNELS  = 'monitor_channels_v2';
+const STORAGE_DOWNLOADS = 'downloads_v2';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function isChannelUrl(url) {
-  return /youtube\.com\/(@|channel\/|c\/|user\/)/.test(url);
-}
-
 function getLiveUrl(url) {
-  url = url.trim().replace(/\/$/, '');
-  if (isChannelUrl(url) && !url.endsWith('/live')) {
+  url = url.trim().replace(/\/+$/, '');
+  if (/youtube\.com\/(@|channel\/|c\/|user\/)/.test(url) && !url.endsWith('/live')) {
     return url + '/live';
   }
   return url;
 }
 
-function fmtTime(d) {
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function isValidYouTubeUrl(url) {
+  return url.includes('youtube.com') || url.includes('youtu.be');
 }
 
-// ── Check if YouTube URL is live via oEmbed ───────────────────────────────────
+function shortUrl(url) {
+  return url
+    .replace('https://www.youtube.com/', '')
+    .replace('https://youtube.com/', '')
+    .replace('http://youtube.com/', '');
+}
+
+function fmtTime(date) {
+  return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtDate(date) {
+  return new Date(date).toLocaleDateString([], { day: '2-digit', month: 'short' });
+}
+
 async function checkIsLive(url) {
   try {
     const liveUrl = getLiveUrl(url);
-    // Use YouTube oEmbed to check if stream exists/is live
-    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(liveUrl)}&format=json`;
-    const res = await fetch(oembedUrl, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return false;
-    // If oEmbed returns successfully, the stream is accessible (live)
-    return true;
+    const res = await fetch(
+      'https://www.youtube.com/oembed?url=' + encodeURIComponent(liveUrl) + '&format=json',
+      { signal: AbortSignal.timeout(12000) }
+    );
+    return res.ok;
   } catch {
     return false;
   }
 }
 
-// ── Main App ──────────────────────────────────────────────────────────────────
+async function sendNotification(title, body) {
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: { title, body, sound: true },
+      trigger: null,
+    });
+  } catch {}
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [mode, setMode]           = useState('manual'); // 'manual' | 'auto'
-  const [url, setUrl]             = useState('');
-  const [running, setRunning]     = useState(false);
-  const [status, setStatus]       = useState('Ready');
-  const [subStatus, setSubStatus] = useState('Waiting for input...');
-  const [statusColor, setStatusColor] = useState(C.green);
-  const [logs, setLogs]           = useState([]);
-  const [recordings, setRecordings] = useState([]);
-  const stopRef = useRef(false);
-  const scrollRef = useRef(null);
+  const [tab, setTab]         = useState('monitoring');
+  const [urlInput, setUrlInput] = useState('');
+  const [channels, setChannels] = useState([]);
+  const [downloads, setDownloads] = useState([]);
+  const stopRefs = useRef({});
+  const loopRefs = useRef({});
+  const downloadsRef = useRef([]);
 
   useEffect(() => {
-    loadRecordings();
+    requestPermissions();
+    loadData();
   }, []);
 
-  // ── Logging ────────────────────────────────────────────────────────────────
-  function addLog(msg, color = C.textMid) {
-    const entry = { id: Date.now() + Math.random(), msg, color, time: fmtTime(new Date()) };
-    setLogs(prev => [...prev.slice(-200), entry]);
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+  // Keep downloadsRef in sync so loops can access latest downloads
+  useEffect(() => {
+    downloadsRef.current = downloads;
+  }, [downloads]);
+
+  async function requestPermissions() {
+    await Notifications.requestPermissionsAsync();
   }
 
-  // ── Recordings storage ─────────────────────────────────────────────────────
-  async function loadRecordings() {
+  async function loadData() {
     try {
-      const data = await AsyncStorage.getItem('recordings');
-      if (data) setRecordings(JSON.parse(data));
-    } catch {}
-  }
-
-  async function saveRecording(entry) {
-    try {
-      const data = await AsyncStorage.getItem('recordings');
-      const list = data ? JSON.parse(data) : [];
-      list.unshift(entry);
-      const trimmed = list.slice(0, 50);
-      await AsyncStorage.setItem('recordings', JSON.stringify(trimmed));
-      setRecordings(trimmed);
-    } catch {}
-  }
-
-  async function deleteAllRecordings() {
-    Alert.alert('Delete All', 'Remove all recording history?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete', style: 'destructive',
-        onPress: async () => {
-          await AsyncStorage.removeItem('recordings');
-          setRecordings([]);
-          addLog('Recording history cleared.', C.orange);
-        }
+      const ch = await AsyncStorage.getItem(STORAGE_CHANNELS);
+      const dl = await AsyncStorage.getItem(STORAGE_DOWNLOADS);
+      if (dl) {
+        const parsed = JSON.parse(dl);
+        setDownloads(parsed);
+        downloadsRef.current = parsed;
       }
-    ]);
+      if (ch) {
+        const parsed = JSON.parse(ch).map(c => ({ ...c, status: 'idle', logs: [] }));
+        setChannels(parsed);
+      }
+    } catch {}
   }
 
-  // ── Start / Stop ───────────────────────────────────────────────────────────
-  function handleAction() {
-    if (running) {
-      stopRef.current = true;
-      setRunning(false);
-      deactivateKeepAwake();
-      setStatus('Ready');
-      setSubStatus('Stopped — waiting for input...');
-      setStatusColor(C.green);
-      addLog('Stopped by user.');
-      return;
-    }
+  async function saveChannels(list) {
+    try { await AsyncStorage.setItem(STORAGE_CHANNELS, JSON.stringify(list)); } catch {}
+  }
 
-    const trimmedUrl = url.trim();
-    if (!trimmedUrl) {
-      Alert.alert('No URL', 'Please paste a YouTube URL first.');
-      return;
-    }
-    if (!trimmedUrl.includes('youtube.com') && !trimmedUrl.includes('youtu.be')) {
+  async function saveDownloads(list) {
+    try { await AsyncStorage.setItem(STORAGE_DOWNLOADS, JSON.stringify(list)); } catch {}
+  }
+
+  // ── Add channel ────────────────────────────────────────────────────────────
+  function addChannel() {
+    const url = urlInput.trim();
+    if (!url) return;
+    if (!isValidYouTubeUrl(url)) {
       Alert.alert('Invalid URL', 'Please enter a valid YouTube URL.');
       return;
     }
 
-    stopRef.current = false;
-    setRunning(true);
+    setChannels(prev => {
+      if (prev.find(c => c.url === url)) {
+        Alert.alert('Already added', 'This channel is already being monitored.');
+        return prev;
+      }
+      const newCh = {
+        id: Date.now().toString(),
+        url,
+        liveUrl: getLiveUrl(url),
+        status: 'idle',
+        logs: [],
+        addedAt: new Date().toISOString(),
+      };
+      const updated = [newCh, ...prev];
+      saveChannels(updated);
+      setTimeout(() => startMonitor(newCh.id, url), 100);
+      return updated;
+    });
+    setUrlInput('');
+  }
+
+  // ── Log / status helpers ───────────────────────────────────────────────────
+  function channelLog(id, msg, color) {
+    setChannels(prev => prev.map(c =>
+      c.id === id
+        ? { ...c, logs: [...(c.logs || []).slice(-20), { msg, color: color || C.textMid, time: fmtTime(new Date()) }] }
+        : c
+    ));
+  }
+
+  function setChannelStatus(id, status) {
+    setChannels(prev => prev.map(c => c.id === id ? { ...c, status } : c));
+  }
+
+  // ── Monitor loop ───────────────────────────────────────────────────────────
+  async function startMonitor(id, url) {
+    if (loopRefs.current[id]) return;
+    stopRefs.current[id] = false;
+    loopRefs.current[id] = true;
     activateKeepAwakeAsync();
 
-    if (mode === 'auto') {
-      startAutoMonitor(trimmedUrl);
-    } else {
-      startManualRecord(trimmedUrl);
-    }
-  }
+    setChannelStatus(id, 'checking');
+    channelLog(id, 'Monitor started.', C.green);
 
-  // ── Manual record ──────────────────────────────────────────────────────────
-  async function startManualRecord(inputUrl) {
-    setStatus('Recording...');
-    setStatusColor(C.red);
-    setSubStatus('Tap Stop when finished');
-    addLog('Starting manual recording...', C.textMid);
-    addLog('URL: ' + getLiveUrl(inputUrl), C.textMid);
+    while (!stopRefs.current[id]) {
+      setChannelStatus(id, 'checking');
+      channelLog(id, 'Checking live status...', C.textDim);
 
-    const startTime = new Date();
-    const entry = {
-      id: Date.now(),
-      url: inputUrl,
-      liveUrl: getLiveUrl(inputUrl),
-      startTime: startTime.toISOString(),
-      mode: 'manual',
-      status: 'recording',
-    };
-
-    addLog('Recording in progress. Use yt-dlp or your preferred tool with:', C.green);
-    addLog(getLiveUrl(inputUrl), C.blue);
-
-    // Show the YouTube URL to open
-    await saveRecording({ ...entry, status: 'started' });
-
-    // Wait until stopped
-    while (!stopRef.current) {
-      await sleep(1000);
-    }
-
-    const endEntry = { ...entry, endTime: new Date().toISOString(), status: 'stopped' };
-    await saveRecording(endEntry);
-    addLog('Recording stopped.', C.orange);
-  }
-
-  // ── Auto monitor ──────────────────────────────────────────────────────────
-  async function startAutoMonitor(inputUrl) {
-    setStatus('Auto-Monitor ON');
-    setStatusColor('#4DA6FF');
-    setSubStatus(`Checking every ${POLL_SECONDS}s...`);
-    addLog('Auto-monitor started.', C.textMid);
-    addLog('Monitoring: ' + getLiveUrl(inputUrl), C.textMid);
-
-    while (!stopRef.current) {
-      addLog('Checking if live...', C.textDim);
-      setSubStatus('Checking stream status...');
-
-      const live = await checkIsLive(inputUrl);
-
-      if (stopRef.current) break;
+      const live = await checkIsLive(url);
+      if (stopRefs.current[id]) break;
 
       if (live) {
-        addLog('LIVE detected!', C.red);
-        setStatus('LIVE Detected!');
-        setStatusColor(C.red);
-        setSubStatus('Stream is live — open URL to record');
+        setChannelStatus(id, 'live');
+        channelLog(id, 'LIVE detected!', C.red);
+        Vibration.vibrate([0, 300, 100, 300]);
+        await sendNotification('Stream is LIVE!', shortUrl(getLiveUrl(url)) + ' is now live!');
 
-        const entry = {
-          id: Date.now(),
-          url: inputUrl,
-          liveUrl: getLiveUrl(inputUrl),
+        // Add download entry
+        const dlEntry = {
+          id: Date.now().toString(),
+          channelUrl: url,
+          liveUrl: getLiveUrl(url),
           detectedAt: new Date().toISOString(),
-          mode: 'auto',
-          status: 'live_detected',
+          status: 'live',
         };
-        await saveRecording(entry);
+        const updatedDl = [dlEntry, ...downloadsRef.current];
+        setDownloads(updatedDl);
+        downloadsRef.current = updatedDl;
+        saveDownloads(updatedDl);
 
-        // Alert user
-        Alert.alert(
-          '🔴 Stream is LIVE!',
-          'The stream is live! Tap Open to start recording in browser.',
-          [
-            { text: 'Dismiss', style: 'cancel' },
-            { text: 'Open Stream', onPress: () => Linking.openURL(getLiveUrl(inputUrl)) }
-          ]
-        );
+        // Keep checking while live
+        setChannelStatus(id, 'recording');
+        channelLog(id, 'Recording in progress...', C.red);
 
-        // Wait for stream to end (keep checking)
-        addLog(`Waiting ${POLL_SECONDS}s before next check...`, C.textDim);
-        await sleepInterruptible(POLL_SECONDS, stopRef);
+        let stillLive = true;
+        while (stillLive && !stopRefs.current[id]) {
+          await sleepI(POLL_SECONDS, id);
+          if (stopRefs.current[id]) break;
+          channelLog(id, 'Checking if still live...', C.textDim);
+          stillLive = await checkIsLive(url);
+        }
+
+        if (!stopRefs.current[id]) {
+          channelLog(id, 'Stream ended. Resuming monitor...', C.orange);
+          await sendNotification('Stream ended', shortUrl(url) + ' stream has ended.');
+
+          // Mark download as ended
+          setDownloads(prev => {
+            const upd = prev.map(d =>
+              d.id === dlEntry.id
+                ? { ...d, status: 'ended', endedAt: new Date().toISOString() }
+                : d
+            );
+            saveDownloads(upd);
+            downloadsRef.current = upd;
+            return upd;
+          });
+        }
       } else {
-        addLog(`Not live. Next check in ${POLL_SECONDS}s...`, C.orange);
-        setSubStatus(`Not live — next check in ${POLL_SECONDS}s`);
-        await sleepInterruptible(POLL_SECONDS, stopRef);
+        channelLog(id, 'Not live. Next check in ' + POLL_SECONDS + 's...', C.textDim);
+        await sleepI(POLL_SECONDS, id);
       }
     }
 
-    if (!stopRef.current) {
-      addLog('Monitor completed.', C.green);
-    }
+    loopRefs.current[id] = false;
+    setChannelStatus(id, 'stopped');
+    channelLog(id, 'Monitor stopped.', C.textMid);
+
+    const anyRunning = Object.values(loopRefs.current).some(Boolean);
+    if (!anyRunning) deactivateKeepAwake();
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  function sleep(ms) {
-    return new Promise(r => setTimeout(r, ms));
+  function stopMonitor(id) { stopRefs.current[id] = true; }
+
+  function restartMonitor(id, url) {
+    stopRefs.current[id] = false;
+    startMonitor(id, url);
   }
 
-  async function sleepInterruptible(seconds, stopRef) {
+  function removeChannel(id) {
+    Alert.alert('Remove', 'Stop and remove this channel?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => {
+        stopRefs.current[id] = true;
+        setChannels(prev => {
+          const upd = prev.filter(c => c.id !== id);
+          saveChannels(upd);
+          return upd;
+        });
+      }}
+    ]);
+  }
+
+  async function sleepI(seconds, id) {
     for (let i = 0; i < seconds; i++) {
-      if (stopRef.current) return;
-      await sleep(1000);
+      if (stopRefs.current[id]) return;
+      await new Promise(r => setTimeout(r, 1000));
     }
   }
 
-  // ── UI ─────────────────────────────────────────────────────────────────────
-  return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar barStyle="light-content" backgroundColor={C.bg} />
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}>
+  // ── Counts ────────────────────────────────────────────────────────────────
+  const activeCount = channels.filter(c => ['checking','live','recording'].includes(c.status)).length;
+  const liveCount   = channels.filter(c => ['live','recording'].includes(c.status)).length;
 
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.iconBox}>
-            <Text style={styles.iconText}>🎬</Text>
+  // ── Status badge ──────────────────────────────────────────────────────────
+  function Badge({ status }) {
+    const map = {
+      idle:      { label: 'Idle',       bg: C.surface2,  fg: C.textDim },
+      checking:  { label: '● Checking', bg: C.greenDark, fg: C.green   },
+      live:      { label: '🔴 LIVE',    bg: C.redDark,   fg: C.red     },
+      recording: { label: '⏺ Rec',     bg: C.redDark,   fg: C.red     },
+      stopped:   { label: 'Stopped',    bg: C.surface2,  fg: C.textDim },
+    };
+    const s = map[status] || map.idle;
+    return (
+      <View style={[S.badge, { backgroundColor: s.bg }]}>
+        <Text style={[S.badgeTxt, { color: s.fg }]}>{s.label}</Text>
+      </View>
+    );
+  }
+
+  // ── Channel card ──────────────────────────────────────────────────────────
+  function ChannelCard({ item }) {
+    const running = ['checking','live','recording'].includes(item.status);
+    const lastLog = (item.logs || []).slice(-1)[0];
+    return (
+      <View style={S.card}>
+        <View style={S.cardRow}>
+          <View style={S.avatar}>
+            <Text style={S.avatarTxt}>{shortUrl(item.url)[0]?.toUpperCase() || 'Y'}</Text>
           </View>
-          <Text style={styles.title}>Stream Recorder</Text>
-        </View>
-
-        {/* Mode toggle */}
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>RECORDING MODE</Text>
-          <View style={styles.toggleRow}>
-            <TouchableOpacity
-              style={[styles.toggleBtn, mode === 'manual' && styles.toggleActive]}
-              onPress={() => { if (!running) setMode('manual'); }}>
-              <Text style={[styles.toggleText, mode === 'manual' && styles.toggleTextActive]}>
-                Manual
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.toggleBtn, mode === 'auto' && styles.toggleActive]}
-              onPress={() => { if (!running) setMode('auto'); }}>
-              <Text style={[styles.toggleText, mode === 'auto' && styles.toggleTextActive]}>
-                Auto-Monitor
-              </Text>
-            </TouchableOpacity>
+          <View style={{ flex: 1, gap: 4 }}>
+            <Text style={S.cardUrl} numberOfLines={1}>{shortUrl(item.url)}</Text>
+            <Badge status={item.status} />
           </View>
-        </View>
-
-        {/* Record card */}
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>RECORD A STREAM</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Paste YouTube URL here..."
-            placeholderTextColor={C.textDim}
-            value={url}
-            onChangeText={setUrl}
-            editable={!running}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <TouchableOpacity
-            style={[styles.actionBtn, running && styles.stopBtn]}
-            onPress={handleAction}>
+          <View style={{ flexDirection: 'row', gap: 6 }}>
             {running
-              ? <ActivityIndicator color="#fff" style={{ marginRight: 8 }} />
-              : null}
-            <Text style={styles.actionBtnText}>
-              {running ? 'Stop' : mode === 'auto' ? 'Start Auto-Monitor' : 'Start Recording'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Status card */}
-        <View style={styles.card}>
-          <Text style={[styles.statusMain, { color: statusColor }]}>{status}</Text>
-          <Text style={styles.statusSub}>{subStatus}</Text>
-        </View>
-
-        {/* Downloads card */}
-        <View style={styles.card}>
-          <View style={styles.rowBetween}>
-            <Text style={styles.cardLabel}>HISTORY</Text>
-            <View style={styles.row}>
-              <TouchableOpacity style={styles.smBtn} onPress={loadRecordings}>
-                <Text style={styles.smBtnText}>Refresh</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.smBtn, styles.smBtnRed]} onPress={deleteAllRecordings}>
-                <Text style={styles.smBtnText}>Delete All</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {recordings.length === 0
-            ? <Text style={styles.emptyText}>No recordings yet</Text>
-            : recordings.map(r => (
-                <TouchableOpacity key={r.id} style={styles.recRow}
-                  onPress={() => Linking.openURL(r.liveUrl)}>
-                  <Text style={styles.recUrl} numberOfLines={1}>{r.liveUrl}</Text>
-                  <Text style={styles.recMeta}>
-                    {r.mode === 'auto' ? '⏱ Auto' : '▶ Manual'} •{' '}
-                    {new Date(r.detectedAt || r.startTime).toLocaleString()}
-                  </Text>
-                  <Text style={[styles.recStatus,
-                    { color: r.status === 'live_detected' ? C.red : C.green }]}>
-                    {r.status === 'live_detected' ? '🔴 Live detected' : '✓ ' + r.status}
-                  </Text>
+              ? <TouchableOpacity style={S.btnStop} onPress={() => stopMonitor(item.id)}>
+                  <Text style={S.btnStopTxt}>Stop</Text>
                 </TouchableOpacity>
-              ))
+              : <TouchableOpacity style={S.btnStart} onPress={() => restartMonitor(item.id, item.url)}>
+                  <Text style={S.btnStartTxt}>Start</Text>
+                </TouchableOpacity>
+            }
+            <TouchableOpacity onPress={() => removeChannel(item.id)} style={S.btnX}>
+              <Text style={S.btnXTxt}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {lastLog &&
+          <Text style={[S.lastLog, { color: lastLog.color }]} numberOfLines={1}>
+            [{lastLog.time}] {lastLog.msg}
+          </Text>
+        }
+
+        {['live','recording'].includes(item.status) &&
+          <TouchableOpacity style={S.openBtn} onPress={() => Linking.openURL(item.liveUrl)}>
+            <Text style={S.openBtnTxt}>🔴 Open Live Stream</Text>
+          </TouchableOpacity>
+        }
+      </View>
+    );
+  }
+
+  // ── Download card ─────────────────────────────────────────────────────────
+  function DlCard({ item }) {
+    return (
+      <TouchableOpacity style={S.dlCard} onPress={() => Linking.openURL(item.liveUrl)}>
+        <View style={[S.avatar, { backgroundColor: item.status === 'live' ? C.redDark : C.greenDark }]}>
+          <Text style={S.avatarTxt}>▶</Text>
+        </View>
+        <View style={{ flex: 1, gap: 3 }}>
+          <Text style={S.cardUrl} numberOfLines={1}>{shortUrl(item.liveUrl)}</Text>
+          <Text style={S.metaTxt}>Detected: {fmtDate(item.detectedAt)} {fmtTime(item.detectedAt)}</Text>
+          {item.endedAt && <Text style={S.metaTxt}>Ended: {fmtTime(item.endedAt)}</Text>}
+        </View>
+        <View style={[S.badge, { backgroundColor: item.status === 'live' ? C.redDark : C.greenDark }]}>
+          <Text style={[S.badgeTxt, { color: item.status === 'live' ? C.red : C.green }]}>
+            {item.status === 'live' ? 'Live' : 'Ended'}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  return (
+    <SafeAreaView style={S.safe}>
+      <StatusBar barStyle="light-content" backgroundColor={C.surface} />
+
+      {/* Header */}
+      <View style={S.header}>
+        <Text style={S.headerTitle}>Stream Recorder</Text>
+        <View style={{ flexDirection: 'row', gap: 6 }}>
+          {activeCount > 0 &&
+            <View style={[S.pill, { backgroundColor: C.greenDark }]}>
+              <Text style={[S.pillTxt, { color: C.green }]}>{activeCount} active</Text>
+            </View>
+          }
+          {liveCount > 0 &&
+            <View style={[S.pill, { backgroundColor: C.redDark }]}>
+              <Text style={[S.pillTxt, { color: C.red }]}>{liveCount} live</Text>
+            </View>
           }
         </View>
+      </View>
 
-        {/* Log card */}
-        <View style={[styles.card, { maxHeight: 220 }]}>
-          <Text style={styles.cardLabel}>ACTIVITY LOG</Text>
-          <ScrollView ref={scrollRef} style={styles.logScroll}
-            showsVerticalScrollIndicator={false}>
-            {logs.length === 0
-              ? <Text style={styles.emptyText}>No activity yet</Text>
-              : logs.map(l => (
-                  <Text key={l.id} style={[styles.logLine, { color: l.color }]}>
-                    <Text style={styles.logTime}>[{l.time}] </Text>{l.msg}
-                  </Text>
-                ))
-            }
-          </ScrollView>
+      {/* Tabs */}
+      <View style={S.tabBar}>
+        {['monitoring','downloads'].map(t => (
+          <TouchableOpacity key={t} style={[S.tab, tab === t && S.tabOn]} onPress={() => setTab(t)}>
+            <Text style={[S.tabTxt, tab === t && S.tabTxtOn]}>
+              {t === 'monitoring'
+                ? 'MONITORING' + (channels.length ? ' (' + channels.length + ')' : '')
+                : 'DOWNLOADS' + (downloads.length ? ' (' + downloads.length + ')' : '')
+              }
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Monitoring tab */}
+      {tab === 'monitoring' && (
+        <View style={{ flex: 1 }}>
+          <View style={S.addBar}>
+            <TextInput
+              style={S.input}
+              placeholder="Paste YouTube channel URL..."
+              placeholderTextColor={C.textDim}
+              value={urlInput}
+              onChangeText={setUrlInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+              onSubmitEditing={addChannel}
+              returnKeyType="done"
+            />
+            <TouchableOpacity style={S.addBtn} onPress={addChannel}>
+              <Text style={S.addBtnTxt}>Add</Text>
+            </TouchableOpacity>
+          </View>
+
+          {channels.length === 0
+            ? <View style={S.empty}>
+                <Text style={{ fontSize: 48 }}>📡</Text>
+                <Text style={S.emptyTitle}>No channels yet</Text>
+                <Text style={S.emptyTxt}>Paste a YouTube channel URL above{'\n'}to start monitoring</Text>
+              </View>
+            : <FlatList
+                data={channels}
+                keyExtractor={i => i.id}
+                renderItem={({ item }) => <ChannelCard item={item} />}
+                contentContainerStyle={{ padding: 12, gap: 10 }}
+                showsVerticalScrollIndicator={false}
+              />
+          }
         </View>
+      )}
 
-        <Text style={styles.footer}>Saves to Downloads/StreamRecorder</Text>
+      {/* Downloads tab */}
+      {tab === 'downloads' && (
+        <View style={{ flex: 1 }}>
+          <View style={S.dlTopBar}>
+            <Text style={S.dlTopTitle}>Stream History</Text>
+            {downloads.length > 0 &&
+              <TouchableOpacity onPress={() => Alert.alert('Clear All', 'Remove all history?', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Clear', style: 'destructive', onPress: () => { setDownloads([]); saveDownloads([]); } }
+              ])}>
+                <Text style={{ color: C.red, fontSize: 13 }}>Clear All</Text>
+              </TouchableOpacity>
+            }
+          </View>
 
-      </ScrollView>
+          {downloads.length === 0
+            ? <View style={S.empty}>
+                <Text style={{ fontSize: 48 }}>📥</Text>
+                <Text style={S.emptyTitle}>No streams recorded</Text>
+                <Text style={S.emptyTxt}>Detected streams will appear here</Text>
+              </View>
+            : <FlatList
+                data={downloads}
+                keyExtractor={i => i.id}
+                renderItem={({ item }) => <DlCard item={item} />}
+                contentContainerStyle={{ padding: 12, gap: 8 }}
+                showsVerticalScrollIndicator={false}
+              />
+          }
+        </View>
+      )}
     </SafeAreaView>
   );
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-const styles = StyleSheet.create({
-  safe:             { flex: 1, backgroundColor: C.bg },
-  scroll:           { flex: 1 },
-  content:          { padding: 16, paddingBottom: 32, gap: 12 },
+const S = StyleSheet.create({
+  safe:       { flex: 1, backgroundColor: C.bg },
+  header:     { backgroundColor: C.surface, paddingHorizontal: 16, paddingVertical: 14,
+                flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  headerTitle:{ fontSize: 20, fontWeight: 'bold', color: C.text },
+  pill:       { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
+  pillTxt:    { fontSize: 11, fontWeight: '600' },
 
-  header:           { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
-  iconBox:          { width: 46, height: 46, borderRadius: 12, backgroundColor: C.blue,
-                      alignItems: 'center', justifyContent: 'center' },
-  iconText:         { fontSize: 22 },
-  title:            { fontSize: 22, fontWeight: 'bold', color: C.text },
+  tabBar:     { flexDirection: 'row', backgroundColor: C.surface,
+                borderBottomWidth: 1, borderBottomColor: C.border },
+  tab:        { flex: 1, paddingVertical: 13, alignItems: 'center',
+                borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabOn:      { borderBottomColor: C.green },
+  tabTxt:     { fontSize: 12, fontWeight: '700', color: C.textMid, letterSpacing: 0.5 },
+  tabTxtOn:   { color: C.green },
 
-  card:             { backgroundColor: C.card, borderRadius: 14, padding: 14,
-                      borderWidth: 1, borderColor: C.border },
-  cardLabel:        { fontSize: 10, fontWeight: 'bold', color: C.textDim,
-                      letterSpacing: 1, marginBottom: 10 },
+  addBar:     { flexDirection: 'row', padding: 10, gap: 8, backgroundColor: C.surface,
+                borderBottomWidth: 1, borderBottomColor: C.border },
+  input:      { flex: 1, backgroundColor: C.surface2, borderRadius: 22,
+                paddingHorizontal: 14, paddingVertical: 10, fontSize: 14, color: C.text },
+  addBtn:     { backgroundColor: C.green, borderRadius: 22, paddingHorizontal: 16,
+                justifyContent: 'center' },
+  addBtnTxt:  { color: '#fff', fontWeight: 'bold', fontSize: 14 },
 
-  toggleRow:        { flexDirection: 'row', gap: 8 },
-  toggleBtn:        { flex: 1, paddingVertical: 10, borderRadius: 8,
-                      backgroundColor: C.blueDim, alignItems: 'center' },
-  toggleActive:     { backgroundColor: C.blue },
-  toggleText:       { fontSize: 13, fontWeight: '600', color: C.textMid },
-  toggleTextActive: { color: '#fff' },
+  card:       { backgroundColor: C.surface, borderRadius: 12, padding: 12,
+                borderWidth: 1, borderColor: C.border },
+  cardRow:    { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  avatar:     { width: 42, height: 42, borderRadius: 21, backgroundColor: C.greenDark,
+                alignItems: 'center', justifyContent: 'center' },
+  avatarTxt:  { fontSize: 17, color: C.green, fontWeight: 'bold' },
+  cardUrl:    { fontSize: 13, color: C.text, fontWeight: '600' },
 
-  input:            { backgroundColor: C.card2, borderRadius: 10, paddingHorizontal: 14,
-                      paddingVertical: 13, fontSize: 14, color: C.text, marginBottom: 10,
-                      borderWidth: 1, borderColor: C.border },
+  badge:      { alignSelf: 'flex-start', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10 },
+  badgeTxt:   { fontSize: 10, fontWeight: 'bold' },
 
-  actionBtn:        { backgroundColor: C.blue, borderRadius: 10, paddingVertical: 15,
-                      alignItems: 'center', flexDirection: 'row', justifyContent: 'center' },
-  stopBtn:          { backgroundColor: C.red },
-  actionBtnText:    { fontSize: 15, fontWeight: 'bold', color: '#fff' },
+  btnStop:    { backgroundColor: C.redDark, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  btnStopTxt: { color: C.red, fontWeight: 'bold', fontSize: 12 },
+  btnStart:   { backgroundColor: C.greenDark, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  btnStartTxt:{ color: C.green, fontWeight: 'bold', fontSize: 12 },
+  btnX:       { padding: 5 },
+  btnXTxt:    { color: C.textDim, fontSize: 15 },
 
-  statusMain:       { fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
-  statusSub:        { fontSize: 12, color: C.textDim },
+  lastLog:    { fontSize: 11, marginTop: 8, paddingLeft: 52 },
+  openBtn:    { marginTop: 10, marginLeft: 52, backgroundColor: C.redDark,
+                borderRadius: 8, paddingVertical: 7, alignItems: 'center' },
+  openBtnTxt: { color: C.red, fontWeight: 'bold', fontSize: 12 },
 
-  rowBetween:       { flexDirection: 'row', justifyContent: 'space-between',
-                      alignItems: 'center', marginBottom: 10 },
-  row:              { flexDirection: 'row', gap: 8 },
-  smBtn:            { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 7,
-                      backgroundColor: C.blueDim },
-  smBtnRed:         { backgroundColor: '#3A1010' },
-  smBtnText:        { fontSize: 12, color: C.textMid, fontWeight: '600' },
+  dlTopBar:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+                padding: 14, borderBottomWidth: 1, borderBottomColor: C.border },
+  dlTopTitle: { fontSize: 14, fontWeight: 'bold', color: C.text },
+  dlCard:     { backgroundColor: C.surface, borderRadius: 10, padding: 12,
+                flexDirection: 'row', alignItems: 'center', gap: 10,
+                borderWidth: 1, borderColor: C.border },
+  metaTxt:    { fontSize: 11, color: C.textDim },
 
-  emptyText:        { fontSize: 13, color: C.textDim, textAlign: 'center', paddingVertical: 12 },
-
-  recRow:           { backgroundColor: C.card2, borderRadius: 8, padding: 10,
-                      marginBottom: 6, borderWidth: 1, borderColor: C.border },
-  recUrl:           { fontSize: 12, color: C.text, marginBottom: 2 },
-  recMeta:          { fontSize: 11, color: C.textDim, marginBottom: 2 },
-  recStatus:        { fontSize: 11, fontWeight: '600' },
-
-  logScroll:        { maxHeight: 160 },
-  logLine:          { fontSize: 11, lineHeight: 18 },
-  logTime:          { color: C.textDim },
-
-  footer:           { fontSize: 10, color: C.textDim, textAlign: 'center', marginTop: 4 },
-});
+  empty:      { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40, gap: 12 },
+  emptyTitle: { fontSize: 16, fontWeight: 'bold', color: 
