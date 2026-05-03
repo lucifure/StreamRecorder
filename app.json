@@ -16,12 +16,9 @@
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.WAKE_LOCK",
-        "android.permission.VIBRATE"
+        "android.permission.VIBRATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED"
       ]
-    },
-    "plugins": [
-      "expo-keep-awake",
-      ["expo-notifications", { "color": "#00A884" }]
-    ]
+    }
   }
 }
