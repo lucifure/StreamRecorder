@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Stream Recorder",
+    "slug": "stream-recorder",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0D0E14"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0D0E14"
+      },
+      "package": "com.streamrecorder.app",
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.WAKE_LOCK",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VIDEO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Stream Recorder to save recordings.",
+          "savePhotosPermission": "Allow Stream Recorder to save recordings.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
+    ]
+  }
+}
