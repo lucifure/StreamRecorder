@@ -1,14 +1,14 @@
 {
   "expo": {
     "name": "Stream Recorder",
-    "slug": "stream-recorder",
+    "slug": "streamrecorder",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "owner": "lucifure",
     "extra": {
       "eas": {
-        "projectId": "5c73c043-a676-4830-aaf1-d9f17a279ecf"
+        "projectId": "5c73c043-a676-4830-aaf1-d9f17a279eyf"
       }
     },
     "android": {
