@@ -380,7 +380,7 @@ export default function App() {
       <View style={S.header}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <View style={S.logoBox}><Text style={S.logoTxt}>🔴</Text></View>
-          <Text style={S.headerTitle}>Stream Recorder</Text>
+          <Text style={S.headerTitle}>Live Monitor</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 6 }}>
           {activeCount > 0 &&
