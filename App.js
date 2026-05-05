@@ -62,16 +62,44 @@ function fmtDate(date) {
   return new Date(date).toLocaleDateString([], { day: '2-digit', month: 'short' });
 }
 
-async function checkIsLive(url) {
-  const liveUrl = getLiveUrl(url);
+async function getChannelId(url) {
   try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(15000),
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US' }
+    });
+    const html = await res.text();
+    const match = html.match(/"channelId":"(UC[^"]+)"/);
+    if (match) return match[1];
+    const match2 = html.match(/channel\/(UC[^"/?]+)/);
+    if (match2) return match2[1];
+    return null;
+  } catch { return null; }
+}
+
+async function checkIsLive(url) {
+  // Method 1: RSS feed — most reliable, never blocked
+  try {
+    const channelId = await getChannelId(url);
+    if (channelId) {
+      const rssUrl = 'https://www.youtube.com/feeds/videos.xml?channel_id=' + channelId;
+      const res = await fetch(rssUrl, { signal: AbortSignal.timeout(12000) });
+      const xml = await res.text();
+      // Check if any recent video is a live broadcast
+      if (xml.includes('yt:isLiveBroadcast') || xml.includes('media:status term="active"')) {
+        return true;
+      }
+    }
+  } catch {}
+
+  // Method 2: Check /live page directly
+  try {
+    const liveUrl = getLiveUrl(url);
     const res = await fetch(liveUrl, {
       signal: AbortSignal.timeout(15000),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 16; Poco F7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 16; Poco F7) AppleWebKit/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
       }
     });
     const html = await res.text();
@@ -79,24 +107,11 @@ async function checkIsLive(url) {
       html.includes('"isLiveBroadcast"') ||
       html.includes('"isLive":true') ||
       html.includes('"live_playback":1') ||
-      html.includes('liveBroadcastDetails') ||
-      html.includes('"isLiveContent":true') ||
       html.includes('hlsManifestUrl') ||
-      html.includes('"continuations"') && html.includes('chat') ||
-      html.includes('watching now') ||
-      (html.includes('watching') && html.includes('LIVE'))
+      html.includes('"isLiveContent":true') ||
+      (html.includes('"continuations"') && html.includes('chat'))
     );
-  } catch {
-    try {
-      const res2 = await fetch(
-        'https://www.youtube.com/oembed?url=' + encodeURIComponent(liveUrl) + '&format=json',
-        { signal: AbortSignal.timeout(10000) }
-      );
-      return res2.ok;
-    } catch {
-      return false;
-    }
-  }
+  } catch { return false; }
 }
 
 async function sendNotification(title, body) {
