@@ -62,39 +62,26 @@ function fmtDate(date) {
   return new Date(date).toLocaleDateString([], { day: '2-digit', month: 'short' });
 }
 
-async function getChannelId(url) {
-  try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(15000),
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US' }
-    });
-    const html = await res.text();
-    const match = html.match(/"channelId":"(UC[^"]+)"/);
-    if (match) return match[1];
-    const match2 = html.match(/channel\/(UC[^"/?]+)/);
-    if (match2) return match2[1];
-    return null;
-  } catch { return null; }
-}
-
 async function checkIsLive(url) {
-  // Method 1: RSS feed — most reliable, never blocked
+  const liveUrl = getLiveUrl(url);
+
+  // Method 1: noembed API - public, never blocked
   try {
-    const channelId = await getChannelId(url);
-    if (channelId) {
-      const rssUrl = 'https://www.youtube.com/feeds/videos.xml?channel_id=' + channelId;
-      const res = await fetch(rssUrl, { signal: AbortSignal.timeout(12000) });
-      const xml = await res.text();
-      // Check if any recent video is a live broadcast
-      if (xml.includes('yt:isLiveBroadcast') || xml.includes('media:status term="active"')) {
-        return true;
-      }
-    }
+    const apiUrl = 'https://noembed.com/embed?url=' + encodeURIComponent(liveUrl);
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(12000) });
+    const data = await res.json();
+    if (data && data.title && !data.error) return true;
   } catch {}
 
-  // Method 2: Check /live page directly
+  // Method 2: YouTube oembed API
   try {
-    const liveUrl = getLiveUrl(url);
+    const oembedUrl = 'https://www.youtube.com/oembed?url=' + encodeURIComponent(liveUrl) + '&format=json';
+    const res = await fetch(oembedUrl, { signal: AbortSignal.timeout(12000) });
+    if (res.ok) return true;
+  } catch {}
+
+  // Method 3: Direct page check
+  try {
     const res = await fetch(liveUrl, {
       signal: AbortSignal.timeout(15000),
       headers: {
@@ -106,10 +93,8 @@ async function checkIsLive(url) {
     return (
       html.includes('"isLiveBroadcast"') ||
       html.includes('"isLive":true') ||
-      html.includes('"live_playback":1') ||
       html.includes('hlsManifestUrl') ||
-      html.includes('"isLiveContent":true') ||
-      (html.includes('"continuations"') && html.includes('chat'))
+      html.includes('"isLiveContent":true')
     );
   } catch { return false; }
 }
