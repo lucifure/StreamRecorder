@@ -526,4 +526,7 @@ const S = StyleSheet.create({
                  flexDirection: 'row', alignItems: 'center', gap: 10,
                  borderWidth: 1, borderColor: C.border },
   metaTxt:     { fontSize: 11, color: C.textDim },
-  empty:       { flex: 1, alignItems: 'center', justifyConten
+  empty:       { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40, gap: 12 },
+  emptyTitle:  { fontSize: 16, fontWeight: 'bold', color: C.text },
+  emptyTxt:    { fontSize: 13, color: C.textDim, textAlign: 'center', lineHeight: 20 },
+});
