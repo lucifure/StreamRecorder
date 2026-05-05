@@ -1,13 +1,16 @@
 {
   "expo": {
-    "name": "Stream Recorder",
+    "name": "Live Monitor",
     "slug": "streamrecorder",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "owner": "lucifure",
+    "icon": "./icon.png",
     "splash": {
-      "backgroundColor": "#111B21"
+      "backgroundColor": "#111B21",
+      "image": "./icon.png",
+      "resizeMode": "contain"
     },
     "extra": {
       "eas": {
@@ -16,6 +19,10 @@
     },
     "android": {
       "package": "com.streamrecorder.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./icon.png",
+        "backgroundColor": "#111B21"
+      },
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.WAKE_LOCK",
