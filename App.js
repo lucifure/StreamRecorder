@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet, View, Text, TextInput, TouchableOpacity,
   Alert, StatusBar, SafeAreaView, FlatList,
-  Linking, Vibration, Image,
+  Linking, Vibration,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -379,7 +379,7 @@ export default function App() {
 
       <View style={S.header}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <Image source={require('./icon.png')} style={S.logo} resizeMode="contain" />
+          <View style={S.logoBox}><Text style={S.logoTxt}>🔴</Text></View>
           <Text style={S.headerTitle}>Stream Recorder</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 6 }}>
@@ -482,7 +482,8 @@ const S = StyleSheet.create({
   header:      { backgroundColor: C.surface, paddingHorizontal: 16, paddingVertical: 12,
                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerTitle: { fontSize: 19, fontWeight: 'bold', color: C.text },
-  logo:        { width: 38, height: 38, borderRadius: 8 },
+  logoBox:     { width: 38, height: 38, borderRadius: 8, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
+  logoTxt:     { fontSize: 22 },
   pill:        { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
   pillTxt:     { fontSize: 11, fontWeight: '600' },
   tabBar:      { flexDirection: 'row', backgroundColor: C.surface,
@@ -525,5 +526,4 @@ const S = StyleSheet.create({
                  flexDirection: 'row', alignItems: 'center', gap: 10,
                  borderWidth: 1, borderColor: C.border },
   metaTxt:     { fontSize: 11, color: C.textDim },
-  empty:       { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40, gap: 12 },
-  emptyTitle:  { fontSize: 16, fontWeight: 'bold',
+  empty:       { flex: 1, alignItems: 'center', justifyConten
