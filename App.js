@@ -62,30 +62,108 @@ function fmtDate(date) {
   return new Date(date).toLocaleDateString([], { day: '2-digit', month: 'short' });
 }
 
+// ── YouTube Internal API (same method used by TubeMate/Snaptube) ─────────────
+async function getVideoId(url) {
+  // Extract video ID from various YouTube URL formats
+  const patterns = [
+    /[?&]v=([a-zA-Z0-9_-]{11})/,
+    /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+    /embed\/([a-zA-Z0-9_-]{11})/,
+    /shorts\/([a-zA-Z0-9_-]{11})/,
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+async function getChannelVideoId(channelUrl) {
+  // Fetch channel live page to get current live video ID
+  try {
+    const liveUrl = getLiveUrl(channelUrl);
+    const res = await fetch(liveUrl, {
+      signal: AbortSignal.timeout(15000),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 16; Poco F7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      }
+    });
+    const html = await res.text();
+    // Extract video ID from page
+    const match = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+    if (match) return match[1];
+  } catch {}
+  return null;
+}
+
+async function checkVideoIsLive(videoId) {
+  // Use YouTube's internal updated_metadata API — same as TubeMate/Snaptube
+  try {
+    const res = await fetch(
+      'https://www.youtube.com/youtubei/v1/updated_metadata?prettyPrint=false',
+      {
+        method: 'POST',
+        signal: AbortSignal.timeout(15000),
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 16; Poco F7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+          'X-YouTube-Client-Name': '2',
+          'X-YouTube-Client-Version': '2.20240101.00.00',
+          'Origin': 'https://www.youtube.com',
+          'Referer': 'https://www.youtube.com/watch?v=' + videoId,
+        },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: 'ANDROID',
+              clientVersion: '19.09.37',
+              androidSdkVersion: 30,
+              hl: 'en',
+              gl: 'US',
+            }
+          },
+          videoId: videoId,
+        })
+      }
+    );
+    const data = await res.json();
+    const str = JSON.stringify(data);
+    // Check for live indicators in API response
+    if (
+      str.includes('"isLive":true') ||
+      str.includes('"liveBadge"') ||
+      str.includes('"LIVE"') ||
+      str.includes('"watching"') ||
+      str.includes('watching now')
+    ) return true;
+  } catch {}
+  return false;
+}
+
 async function checkIsLive(url) {
   const liveUrl = getLiveUrl(url);
 
-  // Method 1: noembed API - public, never blocked
-  try {
-    const apiUrl = 'https://noembed.com/embed?url=' + encodeURIComponent(liveUrl);
-    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(12000) });
-    const data = await res.json();
-    if (data && data.title && !data.error) return true;
-  } catch {}
+  // Step 1: Check if URL already has video ID
+  let videoId = await getVideoId(url);
 
-  // Method 2: YouTube oembed API
-  try {
-    const oembedUrl = 'https://www.youtube.com/oembed?url=' + encodeURIComponent(liveUrl) + '&format=json';
-    const res = await fetch(oembedUrl, { signal: AbortSignal.timeout(12000) });
-    if (res.ok) return true;
-  } catch {}
+  // Step 2: If channel URL, fetch live page to get video ID
+  if (!videoId) {
+    videoId = await getChannelVideoId(url);
+  }
 
-  // Method 3: Direct page check
+  // Step 3: Use internal API with video ID
+  if (videoId) {
+    const live = await checkVideoIsLive(videoId);
+    if (live) return true;
+  }
+
+  // Step 4: Fallback — direct page check
   try {
     const res = await fetch(liveUrl, {
       signal: AbortSignal.timeout(15000),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 16; Poco F7) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 16; Poco F7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
       }
     });
@@ -94,7 +172,8 @@ async function checkIsLive(url) {
       html.includes('"isLiveBroadcast"') ||
       html.includes('"isLive":true') ||
       html.includes('hlsManifestUrl') ||
-      html.includes('"isLiveContent":true')
+      html.includes('"isLiveContent":true') ||
+      html.includes('"live_playback":1')
     );
   } catch { return false; }
 }
