@@ -62,15 +62,65 @@ function fmtDate(date) {
   return new Date(date).toLocaleDateString([], { day: '2-digit', month: 'short' });
 }
 
-// ── YouTube Live Detection via our server (uses official YouTube API) ─────────
-const SERVER_URL = 'https://live-check-server.onrender.com';
+// ── YouTube Live Detection — Direct API (no server needed!) ──────────────────
+const YT_API_KEY = 'AIzaSyDnAsBrxe_aFkUSpqkrFDczUw-PpLoEhuY';
+
+async function getChannelId(url) {
+  // Method 1: Extract UC channel ID directly from URL
+  const ucMatch = url.match(/channel\/(UC[a-zA-Z0-9_-]+)/);
+  if (ucMatch) return ucMatch[1];
+
+  // Method 2: Use YouTube API forHandle
+  const handleMatch = url.match(/youtube\.com\/@([^/?#]+)/);
+  if (handleMatch) {
+    try {
+      const handle = handleMatch[1];
+      const res = await fetch(
+        'https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=' +
+        encodeURIComponent(handle) + '&key=' + YT_API_KEY,
+        { signal: AbortSignal.timeout(15000) }
+      );
+      const data = await res.json();
+      if (data.items && data.items.length > 0) {
+        return data.items[0].id;
+      }
+    } catch {}
+  }
+
+  // Method 3: Search by channel name
+  const nameMatch = url.match(/youtube\.com\/(?:c\/|user\/)([^/?#]+)/);
+  if (nameMatch) {
+    try {
+      const res = await fetch(
+        'https://www.googleapis.com/youtube/v3/search?part=snippet&q=' +
+        encodeURIComponent(nameMatch[1]) +
+        '&type=channel&maxResults=1&key=' + YT_API_KEY,
+        { signal: AbortSignal.timeout(15000) }
+      );
+      const data = await res.json();
+      if (data.items && data.items.length > 0) {
+        return data.items[0].snippet.channelId;
+      }
+    } catch {}
+  }
+  return null;
+}
 
 async function checkIsLive(url) {
   try {
-    const apiUrl = SERVER_URL + '/check?url=' + encodeURIComponent(url);
-    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(25000) });
+    // Get channel ID from URL
+    const channelId = await getChannelId(url);
+    if (!channelId) return false;
+
+    // Check for active live stream using YouTube Data API v3
+    const res = await fetch(
+      'https://www.googleapis.com/youtube/v3/search?part=snippet' +
+      '&channelId=' + channelId +
+      '&eventType=live&type=video&maxResults=1&key=' + YT_API_KEY,
+      { signal: AbortSignal.timeout(15000) }
+    );
     const data = await res.json();
-    return data.live === true;
+    return data.items && data.items.length > 0;
   } catch {
     return false;
   }
