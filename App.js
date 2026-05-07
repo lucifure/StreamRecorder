@@ -62,125 +62,18 @@ function fmtDate(date) {
   return new Date(date).toLocaleDateString([], { day: '2-digit', month: 'short' });
 }
 
-// ── YouTube Live Detection (Multi-method) ────────────────────────────────────
-function extractVideoId(url) {
-  const patterns = [
-    /[?&]v=([a-zA-Z0-9_-]{11})/,
-    /youtu\.be\/([a-zA-Z0-9_-]{11})/,
-    /embed\/([a-zA-Z0-9_-]{11})/,
-    /shorts\/([a-zA-Z0-9_-]{11})/,
-  ];
-  for (const p of patterns) {
-    const m = url.match(p);
-    if (m) return m[1];
-  }
-  return null;
-}
+// ── YouTube Live Detection via our server (uses official YouTube API) ─────────
+const SERVER_URL = 'https://live-check-server.onrender.com';
 
 async function checkIsLive(url) {
-  const liveUrl = getLiveUrl(url);
-
-  // Method 1: Fetch live page — get video ID + check live status
   try {
-    const res = await fetch(liveUrl, {
-      signal: AbortSignal.timeout(15000),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 16; Poco F7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html',
-      }
-    });
-    const html = await res.text();
-
-    // Direct live indicators
-    if (
-      html.includes('"isLive":true') ||
-      html.includes('"live_playback":1') ||
-      html.includes('hlsManifestUrl') ||
-      html.includes('"isLiveContent":true') ||
-      html.includes('"isLiveBroadcast"')
-    ) return true;
-
-    // Get video ID from page for API call
-    const vidMatch = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-    if (vidMatch) {
-      const videoId = vidMatch[1];
-
-      // Method 2: YouTube player API — most reliable
-      try {
-        const playerRes = await fetch(
-          'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
-          {
-            method: 'POST',
-            signal: AbortSignal.timeout(15000),
-            headers: {
-              'Content-Type': 'application/json',
-              'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 16) gzip',
-              'X-YouTube-Client-Name': '3',
-              'X-YouTube-Client-Version': '19.09.37',
-            },
-            body: JSON.stringify({
-              videoId: videoId,
-              context: {
-                client: {
-                  clientName: 'ANDROID',
-                  clientVersion: '19.09.37',
-                  androidSdkVersion: 30,
-                  hl: 'en',
-                  gl: 'US',
-                  utcOffsetMinutes: 0,
-                }
-              }
-            })
-          }
-        );
-        const playerData = await playerRes.json();
-        const str = JSON.stringify(playerData);
-        if (
-          str.includes('"isLive":true') ||
-          str.includes('"isLiveContent":true') ||
-          str.includes('"hlsManifestUrl"') ||
-          str.includes('"liveChunkReadahead"')
-        ) return true;
-      } catch {}
-
-      // Method 3: updated_metadata API
-      try {
-        const metaRes = await fetch(
-          'https://www.youtube.com/youtubei/v1/updated_metadata?prettyPrint=false',
-          {
-            method: 'POST',
-            signal: AbortSignal.timeout(15000),
-            headers: {
-              'Content-Type': 'application/json',
-              'User-Agent': 'Mozilla/5.0',
-              'X-YouTube-Client-Name': '1',
-              'X-YouTube-Client-Version': '2.20240101',
-            },
-            body: JSON.stringify({
-              videoId: videoId,
-              context: {
-                client: {
-                  clientName: 'WEB',
-                  clientVersion: '2.20240101',
-                  hl: 'en',
-                  gl: 'US',
-                }
-              }
-            })
-          }
-        );
-        const metaData = await metaRes.json();
-        const mStr = JSON.stringify(metaData);
-        if (
-          mStr.includes('"isLive":true') ||
-          mStr.includes('"viewCountText"') && mStr.includes('watching')
-        ) return true;
-      } catch {}
-    }
-  } catch {}
-
-  return false;
+    const apiUrl = SERVER_URL + '/check?url=' + encodeURIComponent(url);
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(25000) });
+    const data = await res.json();
+    return data.live === true;
+  } catch {
+    return false;
+  }
 }
 
 async function sendNotification(title, body) {
